@@ -1,4 +1,6 @@
 import copy
+import math
+import operator
 from functools import update_wrapper
 
 from .wsgi import ClosingIterator
@@ -235,6 +237,21 @@ class LocalManager:
         return f"<{type(self).__name__} storages: {len(self.locals)}>"
 
 
+def _r_op(proxy, other, name, l_op):
+    co = proxy._get_current_object()
+    r_op = getattr(co, name, None)
+
+    if r_op is not None:
+        out = r_op(other)
+
+        if out is NotImplemented:
+            return l_op(other, co)
+
+        return out
+
+    return l_op(other, co)
+
+
 class LocalProxy:
     """Acts as a proxy for a werkzeug local.  Forwards all operations to
     a proxied object.  The only operations not supported for forwarding
@@ -268,14 +285,15 @@ class LocalProxy:
         session = LocalProxy(lambda: get_current_request().session)
 
     .. versionchanged:: 0.6.1
-       The class can be instantiated with a callable as well now.
+       The class can be instantiated with a callable.
     """
 
-    __slots__ = ("__local", "__dict__", "__name__", "__wrapped__")
+    __slots__ = ("__local", "__name__", "__wrapped__")
 
     def __init__(self, local, name=None):
         object.__setattr__(self, "_LocalProxy__local", local)
         object.__setattr__(self, "__name__", name)
+
         if callable(local) and not hasattr(local, "__release_local__"):
             # "local" is a callable that is not an instance of Local or
             # LocalManager: mark it as a wrapped function.
@@ -288,24 +306,49 @@ class LocalProxy:
         """
         if not hasattr(self.__local, "__release_local__"):
             return self.__local()
+
         try:
             return getattr(self.__local, self.__name__)
         except AttributeError:
             raise RuntimeError(f"no object bound to {self.__name__}")
-
-    @property
-    def __dict__(self):
-        try:
-            return self._get_current_object().__dict__
-        except RuntimeError:
-            raise AttributeError("__dict__")
 
     def __repr__(self):
         try:
             obj = self._get_current_object()
         except RuntimeError:
             return f"<{type(self).__name__} unbound>"
+
         return repr(obj)
+
+    def __str__(self):
+        return str(self._get_current_object())
+
+    def __bytes__(self):
+        return bytes(self._get_current_object())
+
+    def __format__(self, format_spec):
+        return self._get_current_object().__format__(format_spec=format_spec)
+
+    def __lt__(self, other):
+        return self._get_current_object() < other
+
+    def __le__(self, other):
+        return self._get_current_object() <= other
+
+    def __eq__(self, other):
+        return self._get_current_object() == other
+
+    def __ne__(self, other):
+        return self._get_current_object() != other
+
+    def __gt__(self, other):
+        return self._get_current_object() > other
+
+    def __ge__(self, other):
+        return self._get_current_object() >= other
+
+    def __hash__(self):
+        return hash(self._get_current_object())
 
     def __bool__(self):
         try:
@@ -313,16 +356,52 @@ class LocalProxy:
         except RuntimeError:
             return False
 
+    def __getattr__(self, name):
+        return getattr(self._get_current_object(), name)
+
+    # __getattribute__
+
+    def __setattr__(self, name, value):
+        setattr(self._get_current_object(), name, value)
+
+    def __delattr__(self, name):
+        delattr(self._get_current_object(), name)
+
     def __dir__(self):
         try:
             return dir(self._get_current_object())
         except RuntimeError:
             return []
 
-    def __getattr__(self, name):
-        if name == "__members__":
-            return dir(self._get_current_object())
-        return getattr(self._get_current_object(), name)
+    # __get__
+    # __set__
+    # __delete__
+    # __set_name__
+    # __objclass__
+
+    # __slots__
+    # __dict__
+    # __weakref__
+
+    # __init_subclass__
+
+    # __prepare__
+
+    # __instancecheck__
+    # __subclasscheck__
+
+    # __class_getitem__
+
+    def __call__(self, *args, **kwargs):
+        return self._get_current_object()(*args, **kwargs)
+
+    def __len__(self):
+        return len(self._get_current_object())
+
+    # __length_hint__
+
+    def __getitem__(self, key):
+        return self._get_current_object()[key]
 
     def __setitem__(self, key, value):
         self._get_current_object()[key] = value
@@ -330,56 +409,215 @@ class LocalProxy:
     def __delitem__(self, key):
         del self._get_current_object()[key]
 
-    __setattr__ = lambda x, n, v: setattr(x._get_current_object(), n, v)
-    __delattr__ = lambda x, n: delattr(x._get_current_object(), n)
-    __str__ = lambda x: str(x._get_current_object())
-    __lt__ = lambda x, o: x._get_current_object() < o
-    __le__ = lambda x, o: x._get_current_object() <= o
-    __eq__ = lambda x, o: x._get_current_object() == o
-    __ne__ = lambda x, o: x._get_current_object() != o
-    __gt__ = lambda x, o: x._get_current_object() > o
-    __ge__ = lambda x, o: x._get_current_object() >= o
-    __hash__ = lambda x: hash(x._get_current_object())
-    __call__ = lambda x, *a, **kw: x._get_current_object()(*a, **kw)
-    __len__ = lambda x: len(x._get_current_object())
-    __getitem__ = lambda x, i: x._get_current_object()[i]
-    __iter__ = lambda x: iter(x._get_current_object())
-    __contains__ = lambda x, i: i in x._get_current_object()
-    __add__ = lambda x, o: x._get_current_object() + o
-    __sub__ = lambda x, o: x._get_current_object() - o
-    __mul__ = lambda x, o: x._get_current_object() * o
-    __floordiv__ = lambda x, o: x._get_current_object() // o
-    __mod__ = lambda x, o: x._get_current_object() % o
-    __divmod__ = lambda x, o: x._get_current_object().__divmod__(o)
-    __pow__ = lambda x, o: x._get_current_object() ** o
-    __lshift__ = lambda x, o: x._get_current_object() << o
-    __rshift__ = lambda x, o: x._get_current_object() >> o
-    __and__ = lambda x, o: x._get_current_object() & o
-    __xor__ = lambda x, o: x._get_current_object() ^ o
-    __or__ = lambda x, o: x._get_current_object() | o
-    __div__ = lambda x, o: x._get_current_object().__div__(o)
-    __truediv__ = lambda x, o: x._get_current_object().__truediv__(o)
-    __neg__ = lambda x: -(x._get_current_object())
-    __pos__ = lambda x: +(x._get_current_object())
-    __abs__ = lambda x: abs(x._get_current_object())
-    __invert__ = lambda x: ~(x._get_current_object())
-    __complex__ = lambda x: complex(x._get_current_object())
-    __int__ = lambda x: int(x._get_current_object())
-    __long__ = lambda x: long(x._get_current_object())  # noqa
-    __float__ = lambda x: float(x._get_current_object())
-    __oct__ = lambda x: oct(x._get_current_object())
-    __hex__ = lambda x: hex(x._get_current_object())
-    __index__ = lambda x: x._get_current_object().__index__()
-    __coerce__ = lambda x, o: x._get_current_object().__coerce__(x, o)
-    __enter__ = lambda x: x._get_current_object().__enter__()
-    __exit__ = lambda x, *a, **kw: x._get_current_object().__exit__(*a, **kw)
-    __radd__ = lambda x, o: o + x._get_current_object()
-    __rsub__ = lambda x, o: o - x._get_current_object()
-    __rmul__ = lambda x, o: o * x._get_current_object()
-    __rdiv__ = lambda x, o: o / x._get_current_object()
-    __rtruediv__ = __rdiv__
-    __rfloordiv__ = lambda x, o: o // x._get_current_object()
-    __rmod__ = lambda x, o: o % x._get_current_object()
-    __rdivmod__ = lambda x, o: x._get_current_object().__rdivmod__(o)
-    __copy__ = lambda x: copy.copy(x._get_current_object())
-    __deepcopy__ = lambda x, memo: copy.deepcopy(x._get_current_object(), memo)
+    # __missing__
+
+    def __iter__(self):
+        return iter(self._get_current_object())
+
+    def __next__(self):
+        return next(self._get_current_object())
+
+    def __reversed__(self):
+        return reversed(self._get_current_object())
+
+    def __contains__(self, item):
+        return item in self._get_current_object()
+
+    def __add__(self, other):
+        return self._get_current_object() + other
+
+    def __sub__(self, other):
+        return self._get_current_object() - other
+
+    def __mul__(self, other):
+        return self._get_current_object() * other
+
+    def __matmul__(self, other):
+        return self._get_current_object() @ other
+
+    def __truediv__(self, other):
+        return self._get_current_object() / other
+
+    def __floordiv__(self, other):
+        return self._get_current_object() // other
+
+    def __mod__(self, other):
+        return self._get_current_object() % other
+
+    def __divmod__(self, other):
+        return divmod(self._get_current_object(), other)
+
+    def __pow__(self, other, modulo=None):
+        if modulo is None:
+            return self._get_current_object() ** other
+
+        return pow(self._get_current_object(), other, modulo)
+
+    def __lshift__(self, other):
+        return self._get_current_object() << other
+
+    def __rshift__(self, other):
+        return self._get_current_object() >> other
+
+    def __and__(self, other):
+        return self._get_current_object() & other
+
+    def __xor__(self, other):
+        return self._get_current_object() ^ other
+
+    def __or__(self, other):
+        return self._get_current_object() | other
+
+    def __radd__(self, other):
+        return _r_op(self, other, "__radd__", operator.add)
+
+    def __rsub__(self, other):
+        return _r_op(self, other, "__rsub__", operator.sub)
+
+    def __rmul__(self, other):
+        return _r_op(self, other, "__rmul__", operator.mul)
+
+    def __rmatmul__(self, other):
+        return _r_op(self, other, "__rmatmul__", operator.matmul)
+
+    def __rtruediv__(self, other):
+        return _r_op(self, other, "__rtruediv__", operator.truediv)
+
+    def __rfloordiv__(self, other):
+        return _r_op(self, other, "__rfloordiv__", operator.floordiv)
+
+    def __rmod__(self, other):
+        return _r_op(self, other, "__rmod__", operator.mod)
+
+    def __rdivmod__(self, other):
+        return _r_op(self, other, "__rdivmod__", divmod)
+
+    def __rpow__(self, other, modulo=None):
+        return _r_op(self, other, "__rpow__", pow)
+
+    def __rlshift__(self, other):
+        return _r_op(self, other, "__rlshift__", operator.lshift)
+
+    def __rrshift__(self, other):
+        return _r_op(self, other, "__rrshift__", operator.rshift)
+
+    def __rand__(self, other):
+        return _r_op(self, other, "__rand__", operator.and_)
+
+    def __rxor__(self, other):
+        return _r_op(self, other, "__rxor__", operator.xor)
+
+    def __ror__(self, other):
+        return _r_op(self, other, "__ror__", operator.or_)
+
+    def __iadd__(self, other):
+        operator.iadd(self._get_current_object(), other)
+        return self
+
+    def __isub__(self, other):
+        operator.isub(self._get_current_object(), other)
+        return self
+
+    def __imul__(self, other):
+        operator.imul(self._get_current_object(), other)
+        return self
+
+    def __imatmul__(self, other):
+        operator.imatmul(self._get_current_object(), other)
+        return self
+
+    def __itruediv__(self, other):
+        operator.itruediv(self._get_current_object(), other)
+        return self
+
+    def __ifloordiv__(self, other):
+        operator.ifloordiv(self._get_current_object(), other)
+        return self
+
+    def __imod__(self, other):
+        operator.imod(self._get_current_object(), other)
+        return self
+
+    def __ipow__(self, other, modulo=None):
+        operator.ipow(self._get_current_object(), other)
+        return self
+
+    def __ilshift__(self, other):
+        operator.ilshift(self._get_current_object(), other)
+        return self
+
+    def __irshift__(self, other):
+        operator.irshift(self._get_current_object(), other)
+        return self
+
+    def __iand__(self, other):
+        operator.iand(self._get_current_object(), other)
+        return self
+
+    def __ixor__(self, other):
+        operator.ixor(self._get_current_object(), other)
+        return self
+
+    def __ior__(self, other):
+        operator.ior(self._get_current_object(), other)
+        return self
+
+    def __neg__(self):
+        return -(self._get_current_object())
+
+    def __pos__(self):
+        return +(self._get_current_object())
+
+    def __abs__(self):
+        return abs(self._get_current_object())
+
+    def __invert__(self):
+        return ~(self._get_current_object())
+
+    def __complex__(self):
+        return complex(self._get_current_object())
+
+    def __int__(self):
+        return int(self._get_current_object())
+
+    def __float__(self):
+        return float(self._get_current_object())
+
+    def __index__(self):
+        return self._get_current_object().__index__()
+
+    def __round__(self, ndigits=None):
+        return round(self._get_current_object(), ndigits)
+
+    def __trunc__(self):
+        return math.trunc(self._get_current_object())
+
+    def __floor__(self):
+        return math.floor(self._get_current_object())
+
+    def __ceil__(self):
+        return math.ceil(self._get_current_object())
+
+    def __enter__(self):
+        return self._get_current_object().__enter__()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return self._get_current_object().__exit__(exc_type, exc_value, traceback)
+
+    # __await__
+    # __aiter__
+    # __anext__
+    # __aenter__
+
+    def __copy__(self):
+        return copy.copy(self._get_current_object())
+
+    def __deepcopy__(self, memo):
+        return copy.deepcopy(self._get_current_object(), memo)
+
+    # __getnewargs_ex__
+    # __getnewargs__
+    # __getstate__
+    # __setstate__
+    # __reduce__
+    # __reduce_ex__
